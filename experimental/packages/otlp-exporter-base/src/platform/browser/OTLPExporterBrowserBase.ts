@@ -18,7 +18,7 @@ import { OTLPExporterBase } from '../../OTLPExporterBase';
 import { OTLPExporterConfigBase } from '../../types';
 import * as otlpTypes from '../../types';
 import { parseHeaders } from '../../util';
-import { sendWithBeacon, sendWithXhr } from './util';
+import { sendWithBeacon, sendWithFetch } from './util';
 import { diag } from '@opentelemetry/api';
 import { getEnv, baggageUtils, _globalThis } from '@opentelemetry/core';
 
@@ -30,16 +30,16 @@ export abstract class OTLPExporterBrowserBase<
   ServiceRequest,
 > extends OTLPExporterBase<OTLPExporterConfigBase, ExportItem, ServiceRequest> {
   protected _headers: Record<string, string>;
-  private _useXHR: boolean = false;
+  private _useFetch: boolean = false;
 
   /**
    * @param config
    */
   constructor(config: OTLPExporterConfigBase = {}) {
     super(config);
-    this._useXHR =
+    this._useFetch =
       !!config.headers || typeof navigator.sendBeacon !== 'function';
-    if (this._useXHR) {
+    if (this._useFetch) {
       this._headers = Object.assign(
         {},
         parseHeaders(config.headers),
@@ -73,8 +73,8 @@ export abstract class OTLPExporterBrowserBase<
     const body = JSON.stringify(serviceRequest);
 
     const promise = new Promise<void>((resolve, reject) => {
-      if (this._useXHR) {
-        sendWithXhr(
+      if (this._useFetch) {
+        sendWithFetch(
           body,
           this.url,
           this._headers,

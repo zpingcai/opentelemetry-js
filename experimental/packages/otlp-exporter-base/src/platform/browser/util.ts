@@ -161,3 +161,97 @@ export function sendWithXhr(
 
   sendWithRetry();
 }
+
+/**
+ * function to send metrics/spans using browser fetch
+ *     used when navigator.sendBeacon is not available
+ * @param body
+ * @param url
+ * @param headers
+ * @param onSuccess
+ * @param onError
+ */
+export function sendWithFetch(
+  body: string | Blob,
+  url: string,
+  headers: Record<string, string>,
+  exporterTimeout: number,
+  onSuccess: () => void,
+  onError: (error: OTLPExporterError) => void
+): void {
+  const abortController = new AbortController();
+  const signal = abortController.signal;
+
+  let retryTimer: ReturnType<typeof setTimeout>;
+
+  const exporterTimer = setTimeout(() => {
+    clearTimeout(retryTimer);
+    abortController.abort("Request Timeout");
+  }, exporterTimeout);
+
+  const sendWithRetry = (
+    retries = DEFAULT_EXPORT_MAX_ATTEMPTS,
+    minDelay = DEFAULT_EXPORT_INITIAL_BACKOFF
+  ) => {
+    if (signal.aborted) {
+      const err = new OTLPExporterError(signal.reason);
+      onError(err);
+      return;
+    }
+
+    const defaultHeaders = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    };
+
+    fetch(url, {
+      method: 'POST',
+      headers: {
+        ...defaultHeaders,
+        ...headers,
+      },
+      body,
+      signal,
+    }).then((response) => {
+      if (response.ok) {
+        diag.debug('fetch success', body);
+        onSuccess();
+        clearTimeout(exporterTimer);
+        clearTimeout(retryTimer);
+      } else if (isExportRetryable(response.status) && retries > 0 && !signal.aborted) {
+        let retryTime: number;
+        minDelay = DEFAULT_EXPORT_BACKOFF_MULTIPLIER * minDelay;
+
+        // retry after interval specified in Retry-After header
+        if (response.headers.has('Retry-After')) {
+          retryTime = parseRetryAfterToMills(
+            response.headers.get('Retry-After')!
+          );
+        } else {
+          // exponential backoff with jitter
+          retryTime = Math.round(
+            Math.random() * (DEFAULT_EXPORT_MAX_BACKOFF - minDelay) + minDelay
+          );
+        }
+
+        retryTimer = setTimeout(() => {
+          sendWithRetry(retries - 1, minDelay);
+        }, retryTime);
+      } else {
+        const error = new OTLPExporterError(
+          `Failed to export with fetch (status: ${response.status})`,
+          response.status
+        );
+        onError(error);
+        clearTimeout(exporterTimer);
+        clearTimeout(retryTimer);
+      }
+    }).catch((error) => {
+      onError(new OTLPExporterError(String(error)));
+      clearTimeout(exporterTimer);
+      clearTimeout(retryTimer);
+    });
+  };
+
+  sendWithRetry();
+}
